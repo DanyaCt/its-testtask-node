@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-test-ingress
+  annotations:
+      alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-central-1:437190670490:certificate/4f98607e-3ba6-480b-b5f1-e6ce5c215ec7
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80},{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      alb.ingress.kubernetes.io/load-balancer-attributes: routing.http2.enabled=true
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/subnets: its-public-subnet1, its-public-subnet2
+      ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: alb
+  rules:
+  - host: mydjangoapp-its.pp.ua
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nodejs-ser
+            port:
+              number: 80
+  tls:
+    - hosts:
+        - "mydjangoapp-its.pp.ua"
+

@@ -1,0 +1,69 @@
+---
+  - name: Install boto3
+    ansible.builtin.pip:
+      name: 
+       - boto3
+       
+  - name: Update k8s config
+    shell: aws eks --region eu-central-1 update-kubeconfig --name its-eks
+        
+  - name: Download Terraform state file from S3
+    aws_s3:
+      bucket: its-test-task
+      object: terraform.tfstate
+      mode: get
+      dest: /tmp/terraform.tfstate
+      
+  - name: Get ACM arn from Terraform state
+    shell: cat /tmp/terraform.tfstate | jq -r '.outputs.certificate_arn.value'
+    register: certificate_arn
+
+  - name: Change ACM arn in ingress file
+    shell: |
+        sed -i '6s|.*|      alb.ingress.kubernetes.io/certificate-arn: {{ certificate_arn.stdout }}|' roles/deploy/files/ingress.yml
+
+  - name: Update trust policy in role
+    shell: |
+        oidc_id=$(aws eks describe-cluster --name its-eks --query "cluster.identity.oidc.issuer" --output text | cut -d '/' -f 5)
+        sed -i '7s|.*|                "Federated": "arn:aws:iam::437190670490:oidc-provider/oidc.eks.eu-central-1.amazonaws.com/id/'$oidc_id'"|' roles/deploy/json/load-balancer-role-trust-policy.json
+        sed -i '12s|.*|                    "oidc.eks.eu-central-1.amazonaws.com/id/'$oidc_id':aud": "sts.amazonaws.com",|' roles/deploy/json/load-balancer-role-trust-policy.json
+        sed -i '13s|.*|                    "oidc.eks.eu-central-1.amazonaws.com/id/'$oidc_id':sub": "system:serviceaccount:kube-system:aws-load-balancer-controller"|' roles/deploy/json/load-balancer-role-trust-policy.json
+
+  - name: Get efs id from Terraform state
+    shell: cat /tmp/terraform.tfstate | jq -r '.outputs.efs_id.value'
+    register: efs_id
+
+  - name: Update efs id
+    shell: |
+        sed -i '8s|.*|  fileSystemId: {{ efs_id.stdout }}|' roles/deploy/files/sc.yml
+
+  - name: Upload new trust policy
+    shell: aws iam update-assume-role-policy --role-name AmazonEKSLoadBalancerControllerRole  --policy-document file://roles/deploy/json/load-balancer-role-trust-policy.json
+
+  - name: Deploy service, deployment, service account, storage class and delete
+    shell: |
+        kubectl delete csidriver efs.csi.aws.com
+        kubectl apply -f roles/deploy/files/sc.yml
+        kubectl apply -f roles/deploy/files/service.yml
+        kubectl apply -f roles/deploy/files/deployment.yml
+        kubectl apply -f roles/deploy/files/aws-load-balancer-controller-service-account.yml
+
+  - name: Update helm repo and install ingress controller
+    shell: |
+        helm repo add eks https://aws.github.io/eks-charts
+        helm repo update eks
+        helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+          -n kube-system \
+          --set clusterName=its-eks \
+          --set serviceAccount.create=false \
+          --set serviceAccount.name=aws-load-balancer-controller 
+
+  - name: Deploy csidriver and StorageClass
+    shell: |
+        helm install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver
+
+  - name: Deploy ingress
+    shell: |
+        sleep 10
+        kubectl apply -f roles/deploy/files/ingress.yml
+        
